@@ -77,6 +77,11 @@
 
 #include "src/common/sim/sim.h"
 
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#define PORT 8080
 
 /* reference to priority multifactor decay */
 int (*_sim_run_priority_decay)(void)=NULL;
@@ -1226,6 +1231,103 @@ void sim_submit_jobs()
 	}
 }
 
+// Generates job traces from data received from a socket. The expected format is the following:
+// job_id;username;account;submit_time;task_type;wclimit;tasks;cpus_per_tasks;tasks_per_node
+job_trace_t* trace_from_socket_data(char* str) {
+    job_trace_t *trace = NULL;
+    const char delim[] = ";";
+
+    printf("Str: %s\n", str);
+    int count = 1;
+    char *tmp = str;
+    while(tmp = strstr(tmp, delim))
+    {
+        count++;
+        tmp++;
+    }
+    printf("Size: %d\n", count);
+
+    if(count == 9) {
+        printf("Creating job_trace...\n");
+        trace = (job_trace_t*)calloc(1,sizeof(job_trace_t));
+        if (!trace) { printf("SIM: Error. Unable to allocate memory for job record.\n"); return NULL; }
+
+        tmp = strtok(str, delim);
+        trace->job_id = atoi(tmp);
+
+        tmp = strtok(NULL, delim);
+        trace->username = (char*)calloc(strlen(tmp)+1,sizeof(char));
+        if(strlen(tmp) != 0) strcpy(trace->username, tmp);
+        if (!trace->username) { printf("SIM: Error. Unable to allocate memory for 'username'.\n"); return NULL; }
+
+        tmp = strtok(NULL, delim);
+        trace->account = (char*)calloc(strlen(tmp)+1,sizeof(char));
+        if(strlen(tmp) != 0) strcpy(trace->account, tmp);
+        if (!trace->account) { printf("SIM: Error. Unable to allocate memory for 'account'.\n"); return NULL; }
+
+        tmp = strtok(NULL, delim);
+        trace->submit = atol(tmp);
+
+        tmp = strtok(NULL, delim);
+        trace->duration = 600;  // TODO: calculate duration based on "task_type"
+
+        tmp = strtok(NULL, delim);
+        trace->wclimit = 300; //atoi(tmp);  // Fixed for now
+
+        tmp = strtok(NULL, delim);
+        trace->tasks = (strlen(tmp) != 0 ? atoi(tmp) : 1);
+
+        tmp = strtok(NULL, delim);
+        trace->cpus_per_task = (strlen(tmp) != 0 ? atoi(tmp) : 1);
+
+        tmp = strtok(NULL, delim);
+        trace->tasks_per_node = (strlen(tmp) != 0 ? atoi(tmp) : 1);
+
+        // Fill the rest of the fields with default values
+        trace->qosname = (char*) calloc(7, sizeof(char)); strcpy(trace->qosname, "normal");
+        trace->partition = (char*) calloc(7, sizeof(char)); strcpy(trace->partition, "normal");
+        trace->reservation = (char*) calloc(1, sizeof(char));
+        trace->dependency = (char*) calloc(1, sizeof(char));
+        trace->pn_min_memory = 0xfffffffffffffffe;  // use partition default
+        trace->features = (char*) calloc(1, sizeof(char));
+        trace->gres = (char*) calloc(1, sizeof(char));
+        trace->shared = 0;
+        trace->cancelled = 0;
+
+        printf("Job ID: %d\n", trace->job_id);
+        printf("Username: %s\n", trace->username);
+        printf("Account: %s\n", trace->account);
+        printf("Submit time: %ld\n", trace->submit);
+        //printf("Task type: %d\n", atoi(tokens[4].c_str()));
+        printf("WC Limit: %d\n", trace->wclimit);
+        printf("Tasks: %d\n", trace->tasks);
+        printf("CPUs per task: %d\n", trace->cpus_per_task);
+        printf("Tasks per node: %d\n\n", trace->tasks_per_node);
+    }
+
+
+    return trace;
+}
+
+void arr_push(int *arr, int index, int value, int *size, int *capacity){
+     if(*size > *capacity){
+          realloc(arr, sizeof(arr) * 2);
+          *capacity = sizeof(arr) * 2;
+     }
+
+     arr[index] = value;
+     *size = *size + 1;
+}
+
+/*void arr_find(int *arr, int size, int value){
+     if(*size > *capacity){
+          realloc(arr, sizeof(arr) * 2);
+          *capacity = sizeof(arr) * 2;
+     }
+
+     arr[index] = value;
+     *size = *size + 1;
+}*/
 
 extern void sim_controller()
 {
@@ -1237,7 +1339,7 @@ extern void sim_controller()
 	sim_set_new_time(slurm_sim_conf->time_start*(uint64_t)1000000);
 
 	//read job traces
-	sim_read_job_trace(slurm_sim_conf->jobs_trace_file);
+	//sim_read_job_trace(slurm_sim_conf->jobs_trace_file);
 	if(trace_head!=NULL){
 		sim_set_new_time((trace_head->submit-slurm_sim_conf->start_seconds_before_first_job)*(uint64_t)1000000);
 	}
@@ -1281,6 +1383,50 @@ extern void sim_controller()
 	uint32_t next_sprio=0;
 	uint32_t next_sinfo=0;
 	uint32_t next_squeue=0;
+
+	// Open socket **************************************************
+	int server_fd, new_socket = -1, valread = -1;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
+    char buffer[1024] = {0};
+
+    // Creating socket file descriptor
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Forcefully attaching socket to the port 8080
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
+                                                  &opt, sizeof(opt)))
+    {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons( PORT );
+
+    // Forcefully attaching socket to the port 8080
+    if (bind(server_fd, (struct sockaddr *)&address,
+                                 sizeof(address))<0)
+    {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+    if (listen(server_fd, 3) < 0)
+    {
+        perror("listen");
+        exit(EXIT_FAILURE);
+    }
+    // ************************************************************
+    struct job_record *job;
+    int num_unproc_jobs = 0;
+    int arr_size = 0;
+    int arr_capacity = 3;  // Initial capacity
+    int* arr = malloc(3 * sizeof(int));
 
     char ctime_buff[128];
 	while(1)
@@ -1329,8 +1475,57 @@ extern void sim_controller()
 			}
 		}
 
+		// Listen traces if there are no pending jobs ******************
+		if(!trace_head && num_unproc_jobs == 0)  {
+		    if(new_socket == -1) {
+		        printf("Waiting for connections (from simulator)...\n");
+                if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
+                                   (socklen_t*)&addrlen))<0)
+                {
+                    perror("accept");
+                    exit(EXIT_FAILURE);
+                }
+		    }
+
+            //job_trace_t *trace = NULL;
+
+            printf("Starting trace listening...\n");
+            //while(valread != 0) {
+            valread = read( new_socket , buffer, 1024);
+            printf("%s (%d bytes)\n", buffer, valread);
+
+            if(valread > 1023) break;
+            buffer[valread] = '\0';
+
+            /*string str(buffer);
+            if (str.compare("finish") == 0) {
+                printf("Finished reception of traces.\n");
+                break;
+            }*/
+
+            job_trace_t *trace = trace_from_socket_data(buffer);
+            if(trace != NULL) {
+                printf("Inserting trace...\n");
+                //insert_trace_record(trace);
+                if (trace_head == NULL) {
+                    trace_head = trace;
+                    trace_tail = trace;
+                } else {
+                    trace_tail->next = trace;
+                    trace_tail = trace;
+                }
+                num_unproc_jobs += 1;
+            }
+
+            //}
+		}
+		// ***********************************************************
+
+
 		//submit jobs if needed
 		sim_submit_jobs();
+
+        list_iterator_destroy(job_iterator);
 
 
 		//check if jobs done
