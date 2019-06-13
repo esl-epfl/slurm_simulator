@@ -1525,6 +1525,37 @@ extern void sim_controller()
 		//submit jobs if needed
 		sim_submit_jobs();
 
+		// testing allocation info extraction
+		ListIterator job_iterator;
+        job_iterator = list_iterator_create(job_list);
+        while ((job = (struct job_record *) list_next(job_iterator))) {
+            if (!IS_JOB_COMPLETING(job)
+                       && (IS_JOB_PENDING(job)
+                           || IS_JOB_TIMEOUT(job)
+                           || IS_JOB_DEADLINE(job)
+                           || IS_JOB_FAILED(job))) {
+                    continue;
+            }
+            if (IS_JOB_COMPLETE(job)){
+                int found = 0, i;
+                for(i = 0; i < arr_size; i++) {
+                    if((int)job->job_id == arr[i]) {
+                        found = 1;
+                        break;
+                    }
+                }
+
+                if(found == 0) {
+                    arr_push(arr, arr_size, (int)job->job_id, &arr_size, &arr_capacity);
+                    num_unproc_jobs -= 1;
+                    printf("\n>>>>>>>>>>>>>>> %18u %s\n\n", job->job_id,job->nodes);
+                    if(new_socket != -1) {
+                        sprintf(buffer, "%u;%s ", job->job_id, job->nodes);
+                        send(new_socket, buffer, strlen(buffer), 0);
+                    }
+                }
+            }
+        }
         list_iterator_destroy(job_iterator);
 
 
