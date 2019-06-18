@@ -1309,26 +1309,6 @@ job_trace_t* trace_from_socket_data(char* str) {
     return trace;
 }
 
-void arr_push(int *arr, int index, int value, int *size, int *capacity){
-     if(*size > *capacity){
-          realloc(arr, sizeof(arr) * 2);
-          *capacity = sizeof(arr) * 2;
-     }
-
-     arr[index] = value;
-     *size = *size + 1;
-}
-
-/*void arr_find(int *arr, int size, int value){
-     if(*size > *capacity){
-          realloc(arr, sizeof(arr) * 2);
-          *capacity = sizeof(arr) * 2;
-     }
-
-     arr[index] = value;
-     *size = *size + 1;
-}*/
-
 extern void sim_controller()
 {
 	//print conf
@@ -1423,10 +1403,11 @@ extern void sim_controller()
     }
     // ************************************************************
     struct job_record *job;
-    int num_unproc_jobs = 0;
-    int arr_size = 0;
-    int arr_capacity = 3;  // Initial capacity
-    int* arr = malloc(3 * sizeof(int));
+    //int num_unproc_jobs = 0;
+    //int arr_size = 0;
+    //int arr_capacity = 3;  // Initial capacity
+    //int* arr = malloc(3 * sizeof(int));
+    int pending_job = 0;
 
     char ctime_buff[128];
 	while(1)
@@ -1476,7 +1457,8 @@ extern void sim_controller()
 		}
 
 		// Listen traces if there are no pending jobs ******************
-		if(!trace_head && num_unproc_jobs == 0)  {
+		printf("\n\n>>>>>>>>>>>>>>> %d %d\n\n", (!trace_head)?1:0, pending_job);
+		if(!trace_head && pending_job == 0)  {
 		    if(new_socket == -1) {
 		        printf("Waiting for connections (from simulator)...\n");
                 if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
@@ -1504,6 +1486,7 @@ extern void sim_controller()
             }*/
 
             job_trace_t *trace = trace_from_socket_data(buffer);
+            pending_job = trace->job_id;
             if(trace != NULL) {
                 printf("Inserting trace...\n");
                 //insert_trace_record(trace);
@@ -1514,13 +1497,14 @@ extern void sim_controller()
                     trace_tail->next = trace;
                     trace_tail = trace;
                 }
-                num_unproc_jobs += 1;
             }
 
             //}
 		}
 		// ***********************************************************
-
+        printf("\n********************************\n");
+        printf("Current time: %ld -> %ld\n", cur_time, cur_time - 978325200);
+        printf("********************************\n");
 
 		//submit jobs if needed
 		sim_submit_jobs();
@@ -1529,32 +1513,24 @@ extern void sim_controller()
 		ListIterator job_iterator;
         job_iterator = list_iterator_create(job_list);
         while ((job = (struct job_record *) list_next(job_iterator))) {
-            if (!IS_JOB_COMPLETING(job)
-                       && (IS_JOB_PENDING(job)
-                           || IS_JOB_TIMEOUT(job)
-                           || IS_JOB_DEADLINE(job)
-                           || IS_JOB_FAILED(job))) {
+            if (IS_JOB_PENDING(job)
+                   || IS_JOB_TIMEOUT(job)
+                   || IS_JOB_DEADLINE(job)
+                   || IS_JOB_FAILED(job)
+                   || IS_JOB_SUSPENDED(job)) {
                     continue;
             }
-            if (IS_JOB_COMPLETE(job)){
-                int found = 0, i;
-                for(i = 0; i < arr_size; i++) {
-                    if((int)job->job_id == arr[i]) {
-                        found = 1;
-                        break;
-                    }
-                }
 
-                if(found == 0) {
-                    arr_push(arr, arr_size, (int)job->job_id, &arr_size, &arr_capacity);
-                    num_unproc_jobs -= 1;
-                    printf("\n>>>>>>>>>>>>>>> %18u %s\n\n", job->job_id,job->nodes);
-                    if(new_socket != -1) {
-                        sprintf(buffer, "%u;%s ", job->job_id, job->nodes);
-                        send(new_socket, buffer, strlen(buffer), 0);
-                    }
+            if(job->job_id == pending_job) {
+                //arr_push(arr, arr_size, (int)job->job_id, &arr_size, &arr_capacity);
+                printf("\n>>>>>>>>>>>>>>> %18u %s %s\n\n", job->job_id,job->nodes, job->state_desc);
+                if(new_socket != -1) {
+                    sprintf(buffer, "%u;%s ", job->job_id, job->nodes);
+                    send(new_socket, buffer, strlen(buffer), 0);
                 }
+                pending_job=0;
             }
+
         }
         list_iterator_destroy(job_iterator);
 
