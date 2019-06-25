@@ -2968,6 +2968,46 @@ static inline void _log_select_maps(char *loc, bitstr_t *node_map,
 #endif
 }
 
+int print_job_bitmap_info ( bitstr_t *bitmap )
+{
+    char *str;
+    int numbits;
+    if (bitmap) {
+        numbits = bit_size(bitmap);
+        str = xmalloc(numbits*sizeof(char));
+        bit_fmt(str, numbits*sizeof(char), bitmap);
+        info("  const_res_ext: _select_nodes - print_job_bitmap - numbits is: %d, bitmap is %s", numbits, str);
+        xfree(str);
+    } else {
+        info("  const_res_ext: _select_nodes - [no row_bitmap]");
+    }
+
+    return SLURM_SUCCESS;
+}
+
+int print_raw_bitmap ( bitstr_t *bitmap )
+{
+    char *str;
+    int numbits, i;
+    if (bitmap) {
+        numbits = bit_size(bitmap);
+        str = xmalloc(numbits*sizeof(char)+1);
+        str[numbits] = 0;
+        for(i=0; i < numbits; i++) {
+            if(bit_test(bitmap, i))
+                str[i] = '1';
+            else
+                str[i] = '0';
+        }
+        info("  const_res_ext: _select_nodes - raw_bitmap: %s", str);
+        xfree(str);
+    } else {
+        info("  const_res_ext: _select_nodes - [no row_bitmap]");
+    }
+
+    return SLURM_SUCCESS;
+}
+
 /* Select the best set of resources for the given job
  * IN: job_ptr      - pointer to the job requesting resources
  * IN: min_nodes    - minimum number of nodes required
@@ -3056,9 +3096,157 @@ static uint16_t *_select_nodes(struct job_record *job_ptr, uint32_t min_nodes,
 			bit_nclear(core_map, start, cr_get_coremap_offset(n)-1);
 		}
 	}
+
 	_log_select_maps("_select_nodes/sync_cores", node_map, core_map);
 	xfree(cpu_cnt);
 	return cpus;
+}
+
+/* Custom allocator
+ * IN: job_ptr      - pointer to the job requesting resources
+ * IN: min_nodes    - minimum number of nodes required
+ * IN: max_nodes    - maximum number of nodes requested
+ * IN: req_nodes    - number of requested nodes
+ * IN/OUT: node_map - bitmap of available nodes / bitmap of selected nodes
+ * IN: cr_node_cnt  - total number of nodes in the cluster
+ * IN/OUT: core_map - bitmap of available cores / bitmap of selected cores
+ * IN: cr_type      - resource type
+ * IN: test_only    - ignore allocated memory check
+ * IN: part_core_map - bitmap of cores allocated to jobs of this partition
+ *                     or NULL if don't care
+ * IN: prefer_alloc_nodes - select currently allocated nodes first
+ * RET - array with number of CPUs available per node or NULL if not runnable
+ */
+static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_nodes,
+                               uint32_t max_nodes, uint32_t req_nodes,
+                               bitstr_t *node_map, uint32_t cr_node_cnt,
+                               bitstr_t *core_map,
+                               struct node_use_record *node_usage,
+                               uint16_t cr_type, bool test_only,
+                               bitstr_t *part_core_map,
+                               bool prefer_alloc_nodes) {
+
+    int i, rc;
+    uint16_t *cpu_cnt, *cpus = NULL;
+    uint32_t start, n, a;
+    struct job_details *details_ptr = job_ptr->details;
+    bitstr_t *req_map = details_ptr->req_node_bitmap;
+
+    info("_select_nodes: printing initial bit sets");
+    print_job_bitmap_info(node_map);
+    print_job_bitmap_info(core_map);
+    print_raw_bitmap(node_map);
+    print_raw_bitmap(core_map);
+
+    if (bit_set_count(node_map) < min_nodes)
+        return NULL;
+
+    _log_select_maps("_select_nodes/enter", node_map, core_map);
+    /* get resource usage for this job from each available node */
+    _get_res_usage(job_ptr, node_map, core_map, cr_node_cnt,
+                   node_usage, cr_type, &cpu_cnt, test_only, part_core_map);
+
+    // khv: Now cpu_cnt contains the number of CPUs that can be used by the job, per each node
+
+    for (n = 0; n < cr_node_cnt; n++) {
+        if (bit_test(node_map, n) && (cpu_cnt[n] == 0)) {
+            /* insufficient resources available on this node */
+            if (req_map && bit_test(req_map, n)) {
+                /* cannot clear a required node! */
+                xfree(cpu_cnt);
+                return NULL;
+            }
+            bit_clear(node_map, n);
+        }
+    }
+    if (bit_set_count(node_map) < min_nodes) {
+        xfree(cpu_cnt);
+        return NULL;
+    }
+    _log_select_maps("_select_nodes/elim_nodes", node_map, core_map);
+
+    if (details_ptr->ntasks_per_node && details_ptr->num_tasks) {
+        i  = details_ptr->num_tasks;
+        i += (details_ptr->ntasks_per_node - 1);
+        i /= details_ptr->ntasks_per_node;
+        min_nodes = MAX(min_nodes, i);
+    }
+
+    if ((job_ptr->details->num_tasks > 1) &&
+        (max_nodes > job_ptr->details->num_tasks))
+        max_nodes = MAX(job_ptr->details->num_tasks, min_nodes);
+
+    //************************************************************************************************
+    // khv: Basic replacement for the _eval_nodes function
+    //************************************************************************************************
+    if(bit_set_count(node_map) >= req_nodes) {
+        int remainingNodes = req_nodes;
+        info("_choose_nodes: Requested nodes: %d, cr_node_count: %d", remainingNodes, cr_node_cnt);
+        //bitstr_t tmpmap = bit_copy(node_map);
+        for(i=cr_node_cnt-1; i >= 0; i--) {
+            //info("_choose_nodes: cpu count for node %d: %d", i, cpu_cnt[i]);
+            if(bit_test(node_map, i) && remainingNodes > 0) {
+                remainingNodes--;
+                info("_choose_nodes: Updated: %d", remainingNodes);
+                continue;
+            }
+            bit_clear(node_map, i);
+        }
+
+        if(remainingNodes==0) {
+            rc = SLURM_SUCCESS;
+        }
+    }
+
+    //************************************************************************************************
+    // khv: Generation of the core map
+    //************************************************************************************************
+    int core_start_bit, core_end_bit, remainingCoresPerNode;
+    if (rc == SLURM_SUCCESS) {
+        cpus = xmalloc(bit_set_count(node_map) * sizeof(uint16_t));
+        a = 0;
+        core_end_bit=-1;
+        for (n = 0; n < cr_node_cnt; n++) {
+
+            if (bit_test(node_map, n)) {
+                remainingCoresPerNode = 3;  // FIXED for now
+
+                info("_select_nodes: filling cores for node %d...", n);
+                cpus[a++] = remainingCoresPerNode; //cpu_cnt[n];
+
+                core_start_bit = cr_get_coremap_offset(n);
+                info("_select_nodes: clearing cores from %d to %d)", core_end_bit + 1, core_start_bit-1);
+                for(i = core_end_bit + 1; i < core_start_bit; i++) bit_clear(core_map, i);
+                core_end_bit = cr_get_coremap_offset(n+1);
+
+                for(i = core_start_bit; i < core_end_bit; i++) {
+                    if(bit_test(core_map, i) && remainingCoresPerNode > 0) {
+                        remainingCoresPerNode--;
+                        bit_set(core_map, i);
+                    } else {
+                        bit_clear(core_map, i);
+                    }
+
+                }
+            }
+        }
+        if (core_end_bit != cr_get_coremap_offset(cr_node_cnt - 1)) {
+            info("_select_nodes: clearing cores from %d to %d)", core_end_bit + 1, cr_get_coremap_offset(cr_node_cnt - 1) - 1);
+            bit_nclear(core_map, core_end_bit + 1, cr_get_coremap_offset(cr_node_cnt - 1));
+        }
+    }
+
+    info("_select_nodes: printing final bit sets");
+    print_job_bitmap_info(node_map);
+    print_job_bitmap_info(core_map);
+    print_raw_bitmap(node_map);
+    print_raw_bitmap(core_map);
+    info("_select_nodes: cr_node_cnt is %d",cr_node_cnt);
+
+    _log_select_maps("_select_nodes/sync_cores", node_map, core_map);
+    xfree(cpu_cnt);
+    return cpus;
+
 }
 
 /* When any cores on a node are removed from being available for a job,
@@ -3323,19 +3511,37 @@ extern int cr_job_test(struct job_record *job_ptr, bitstr_t *node_bitmap,
 	if (job_ptr->details->whole_node == 1)
 		_block_whole_nodes(node_bitmap, avail_cores, free_cores);
 
-	cpu_count = _select_nodes(job_ptr, min_nodes, max_nodes, req_nodes,
-				  node_bitmap, cr_node_cnt, free_cores,
-				  node_usage, cr_type, test_only,
-				  part_core_map, prefer_alloc_nodes);
+    //*********************************************************************************************
+    // khv: Calling the custom allocator here...
+    //*********************************************************************************************
+    cpu_count = _custom_allocator(job_ptr, min_nodes, max_nodes, req_nodes,
+                              node_bitmap, cr_node_cnt, free_cores,
+                              node_usage, cr_type, test_only,
+                              part_core_map, prefer_alloc_nodes);
 
-	if ((cpu_count) && (job_ptr->best_switch)) {
-		/* job fits! We're done. */
-		if (select_debug_flags & DEBUG_FLAG_SELECT_TYPE) {
-			info("cons_res: cr_job_test: test 1 pass - "
-			     "idle resources found");
-		}
-		goto alloc_job;
-	}
+    if ((cpu_count) && (job_ptr->best_switch)) {
+        /* job fits! We're done. */
+        if (select_debug_flags & DEBUG_FLAG_SELECT_TYPE) {
+            info("cons_res: cr_job_test: test 1 pass - "
+                 "idle resources found");
+        }
+        goto alloc_job;
+    }
+
+    cpu_count = _select_nodes(job_ptr, min_nodes, max_nodes, req_nodes,
+                              node_bitmap, cr_node_cnt, free_cores,
+                              node_usage, cr_type, test_only,
+                              part_core_map, prefer_alloc_nodes);
+
+    if ((cpu_count) && (job_ptr->best_switch)) {
+        /* job fits! We're done. */
+        if (select_debug_flags & DEBUG_FLAG_SELECT_TYPE) {
+            info("cons_res: cr_job_test: test 1 pass - "
+                 "idle resources found");
+        }
+        goto alloc_job;
+    }
+
 	xfree(cpu_count);
 
 	if ((gang_mode == 0) && (job_node_req == NODE_CR_ONE_ROW)) {
