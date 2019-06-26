@@ -1231,10 +1231,11 @@ void sim_submit_jobs()
 	}
 }
 
-// Generates job traces from data received from a socket. The expected format is the following:
-// job_id;username;account;submit_time;task_type;wclimit;tasks;cpus_per_tasks;tasks_per_node
-job_trace_t* trace_from_socket_data(char* str) {
-    job_trace_t *trace = NULL;
+int calc_duration(int workload_id) {
+    return workload_id * 100;  // Temporary calculation
+}
+
+int fields_count(char* str) {
     const char delim[] = ";";
 
     printf("Str: %s\n", str);
@@ -1245,66 +1246,72 @@ job_trace_t* trace_from_socket_data(char* str) {
         count++;
         tmp++;
     }
-    printf("Size: %d\n", count);
 
-    if(count == 9) {
-        printf("Creating job_trace...\n");
-        trace = (job_trace_t*)calloc(1,sizeof(job_trace_t));
-        if (!trace) { printf("SIM: Error. Unable to allocate memory for job record.\n"); return NULL; }
+    return count;
+}
 
-        tmp = strtok(str, delim);
-        trace->job_id = atoi(tmp);
+// Generates job traces from data received from a socket. The expected format is the following:
+// job_id;username;account;submit_time;task_type;wclimit;tasks;cpus_per_tasks;tasks_per_node
+job_trace_t* trace_from_socket_data(char* str) {
+    job_trace_t *trace = NULL;
+    const char delim[] = ";";
+    char *tmp;
 
-        tmp = strtok(NULL, delim);
-        trace->username = (char*)calloc(strlen(tmp)+1,sizeof(char));
-        if(strlen(tmp) != 0) strcpy(trace->username, tmp);
-        if (!trace->username) { printf("SIM: Error. Unable to allocate memory for 'username'.\n"); return NULL; }
+    printf("Creating job_trace...\n");
+    trace = (job_trace_t*)calloc(1,sizeof(job_trace_t));
+    if (!trace) { printf("SIM: Error. Unable to allocate memory for job record.\n"); return NULL; }
 
-        tmp = strtok(NULL, delim);
-        trace->account = (char*)calloc(strlen(tmp)+1,sizeof(char));
-        if(strlen(tmp) != 0) strcpy(trace->account, tmp);
-        if (!trace->account) { printf("SIM: Error. Unable to allocate memory for 'account'.\n"); return NULL; }
+    tmp = strtok(str, delim);
+    trace->job_id = atoi(tmp);
 
-        tmp = strtok(NULL, delim);
-        trace->submit = atol(tmp);
+    tmp = strtok(NULL, delim);
+    trace->username = (char*)calloc(strlen(tmp)+1,sizeof(char));
+    if(strlen(tmp) != 0) strcpy(trace->username, tmp);
+    if (!trace->username) { printf("SIM: Error. Unable to allocate memory for 'username'.\n"); return NULL; }
 
-        tmp = strtok(NULL, delim);
-        trace->duration = 600;  // TODO: calculate duration based on "task_type"
+    tmp = strtok(NULL, delim);
+    trace->account = (char*)calloc(strlen(tmp)+1,sizeof(char));
+    if(strlen(tmp) != 0) strcpy(trace->account, tmp);
+    if (!trace->account) { printf("SIM: Error. Unable to allocate memory for 'account'.\n"); return NULL; }
 
-        tmp = strtok(NULL, delim);
-        trace->wclimit = 300; //atoi(tmp);  // Fixed for now
+    tmp = strtok(NULL, delim);
+    trace->submit = atol(tmp);
 
-        tmp = strtok(NULL, delim);
-        trace->tasks = (strlen(tmp) != 0 ? atoi(tmp) : 1);
+    tmp = strtok(NULL, delim);
+    trace->duration = calc_duration(atoi(tmp));
 
-        tmp = strtok(NULL, delim);
-        trace->cpus_per_task = (strlen(tmp) != 0 ? atoi(tmp) : 1);
+    tmp = strtok(NULL, delim);
+    trace->wclimit = atoi(tmp);  // Fixed for now
 
-        tmp = strtok(NULL, delim);
-        trace->tasks_per_node = (strlen(tmp) != 0 ? atoi(tmp) : 1);
+    tmp = strtok(NULL, delim);
+    trace->tasks = (strlen(tmp) != 0 ? atoi(tmp) : 1);
 
-        // Fill the rest of the fields with default values
-        trace->qosname = (char*) calloc(7, sizeof(char)); strcpy(trace->qosname, "normal");
-        trace->partition = (char*) calloc(7, sizeof(char)); strcpy(trace->partition, "normal");
-        trace->reservation = (char*) calloc(1, sizeof(char));
-        trace->dependency = (char*) calloc(1, sizeof(char));
-        trace->pn_min_memory = 0xfffffffffffffffe;  // use partition default
-        trace->features = (char*) calloc(1, sizeof(char));
-        trace->gres = (char*) calloc(1, sizeof(char));
-        trace->shared = 0;
-        trace->cancelled = 0;
+    tmp = strtok(NULL, delim);
+    trace->cpus_per_task = (strlen(tmp) != 0 ? atoi(tmp) : 1);
 
-        printf("Job ID: %d\n", trace->job_id);
-        printf("Username: %s\n", trace->username);
-        printf("Account: %s\n", trace->account);
-        printf("Submit time: %ld\n", trace->submit);
-        //printf("Task type: %d\n", atoi(tokens[4].c_str()));
-        printf("WC Limit: %d\n", trace->wclimit);
-        printf("Tasks: %d\n", trace->tasks);
-        printf("CPUs per task: %d\n", trace->cpus_per_task);
-        printf("Tasks per node: %d\n\n", trace->tasks_per_node);
-    }
+    tmp = strtok(NULL, delim);
+    trace->tasks_per_node = (strlen(tmp) != 0 ? atoi(tmp) : 1);
 
+    // Fill the rest of the fields with default values
+    trace->qosname = (char*) calloc(7, sizeof(char)); strcpy(trace->qosname, "normal");
+    trace->partition = (char*) calloc(7, sizeof(char)); strcpy(trace->partition, "normal");
+    trace->reservation = (char*) calloc(1, sizeof(char));
+    trace->dependency = (char*) calloc(1, sizeof(char));
+    trace->pn_min_memory = 0xfffffffffffffffe;  // use partition default
+    trace->features = (char*) calloc(1, sizeof(char));
+    trace->gres = (char*) calloc(1, sizeof(char));
+    trace->shared = 0;
+    trace->cancelled = 0;
+
+    printf("Job ID: %d\n", trace->job_id);
+    printf("Username: %s\n", trace->username);
+    printf("Account: %s\n", trace->account);
+    printf("Submit time: %ld\n", trace->submit);
+    printf("Duration: %d\n", trace->duration);
+    printf("WC Limit: %d\n", trace->wclimit);
+    printf("Tasks: %d\n", trace->tasks);
+    printf("CPUs per task: %d\n", trace->cpus_per_task);
+    printf("Tasks per node: %d\n\n", trace->tasks_per_node);
 
     return trace;
 }
@@ -1456,8 +1463,10 @@ extern void sim_controller()
 			}
 		}
 
+		int num_fields = -1;
+
 		// Listen traces if there are no pending jobs ******************
-		printf("\n\n>>>>>>>>>>>>>>> %d %d\n\n", (!trace_head)?1:0, pending_job);
+		printf(">>>>>>>>>>>>>>> %d %d\n", (!trace_head)?1:0, pending_job);
 		if(!trace_head && pending_job == 0)  {
 		    if(new_socket == -1) {
 		        printf("Waiting for connections (from simulator)...\n");
@@ -1474,9 +1483,9 @@ extern void sim_controller()
             printf("Starting trace listening...\n");
             //while(valread != 0) {
             valread = read( new_socket , buffer, 1024);
-            printf("%s (%d bytes)\n", buffer, valread);
+            //printf("%s (%d bytes)\n", buffer, valread);
 
-            if(valread > 1023) break;
+            if(valread > 1023 || valread <= 0) break;
             buffer[valread] = '\0';
 
             /*string str(buffer);
@@ -1485,19 +1494,26 @@ extern void sim_controller()
                 break;
             }*/
 
-            job_trace_t *trace = trace_from_socket_data(buffer);
-            pending_job = trace->job_id;
-            if(trace != NULL) {
-                printf("Inserting trace...\n");
-                //insert_trace_record(trace);
-                if (trace_head == NULL) {
-                    trace_head = trace;
-                    trace_tail = trace;
-                } else {
-                    trace_tail->next = trace;
-                    trace_tail = trace;
+            int num_fields = fields_count(buffer);
+
+            if (num_fields == 9) {  // Job trace
+                job_trace_t *trace = trace_from_socket_data(buffer);
+                pending_job = trace->job_id;
+                if(trace != NULL) {
+                    printf("Inserting trace...\n");
+                    //insert_trace_record(trace);
+                    if (trace_head == NULL) {
+                        trace_head = trace;
+                        trace_tail = trace;
+                    } else {
+                        trace_tail->next = trace;
+                        trace_tail = trace;
+                    }
                 }
+            } else if (num_fields == 9) {
+                printf("%s (%d bytes)\n", buffer, valread);
             }
+
 
             //}
 		}
@@ -1522,18 +1538,15 @@ extern void sim_controller()
             }
 
             if(job->job_id == pending_job) {
-                //arr_push(arr, arr_size, (int)job->job_id, &arr_size, &arr_capacity);
                 printf("\n>>>>>>>>>>>>>>> %18u %s %s\n\n", job->job_id,job->nodes, job->state_desc);
                 if(new_socket != -1) {
-                    sprintf(buffer, "%u;%s ", job->job_id, job->nodes);
+                    sprintf(buffer, "%u;%s;%ld ", job->job_id, job->nodes, cur_time);
                     send(new_socket, buffer, strlen(buffer), 0);
                 }
                 pending_job=0;
             }
-
         }
         list_iterator_destroy(job_iterator);
-
 
 		//check if jobs done
 		sim_process_finished_jobs();
