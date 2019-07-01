@@ -1300,7 +1300,7 @@ job_trace_t* trace_from_socket_data(char* str) {
     trace->pn_min_memory = 0xfffffffffffffffe;  // use partition default
     trace->features = (char*) calloc(1, sizeof(char));
     trace->gres = (char*) calloc(1, sizeof(char));
-    trace->shared = 0;
+    trace->shared = 1;
     trace->cancelled = 0;
 
     printf("Job ID: %d\n", trace->job_id);
