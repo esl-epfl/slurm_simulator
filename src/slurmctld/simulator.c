@@ -1235,10 +1235,9 @@ int calc_duration(int workload_id) {
     return workload_id * 100;  // Temporary calculation
 }
 
-int fields_count(char* str) {
+int count_fields(char* str) {
     const char delim[] = ";";
 
-    printf("Str: %s\n", str);
     int count = 1;
     char *tmp = str;
     while(tmp = strstr(tmp, delim))
@@ -1255,6 +1254,7 @@ int fields_count(char* str) {
 job_trace_t* trace_from_socket_data(char* str) {
     job_trace_t *trace = NULL;
     const char delim[] = ";";
+
     char *tmp;
 
     printf("Creating job_trace...\n");
@@ -1463,11 +1463,9 @@ extern void sim_controller()
 			}
 		}
 
-		int num_fields = -1;
-
 		// Listen traces if there are no pending jobs ******************
-		printf(">>>>>>>>>>>>>>> %d %d\n", (!trace_head)?1:0, pending_job);
-		if(!trace_head && pending_job == 0)  {
+		//printf(">>>>>>>>>>>>>>> %d %d\n", (!trace_head)?1:0, pending_job);
+		while(!trace_head && pending_job == 0)  {
 		    if(new_socket == -1) {
 		        printf("Waiting for connections (from simulator)...\n");
                 if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
@@ -1483,9 +1481,12 @@ extern void sim_controller()
             printf("Starting trace listening...\n");
             //while(valread != 0) {
             valread = read( new_socket , buffer, 1024);
-            //printf("%s (%d bytes)\n", buffer, valread);
+            printf("%s (%d bytes)\n", buffer, valread);
 
-            if(valread > 1023 || valread <= 0) break;
+            if(valread > 1023 || valread == 0) {
+                printf("valread: %d\n", valread);
+                return;
+            }
             buffer[valread] = '\0';
 
             /*string str(buffer);
@@ -1494,33 +1495,40 @@ extern void sim_controller()
                 break;
             }*/
 
-            int num_fields = fields_count(buffer);
+            char *tmp;
 
-            if (num_fields == 9) {  // Job trace
-                job_trace_t *trace = trace_from_socket_data(buffer);
-                pending_job = trace->job_id;
-                if(trace != NULL) {
-                    printf("Inserting trace...\n");
-                    //insert_trace_record(trace);
-                    if (trace_head == NULL) {
-                        trace_head = trace;
-                        trace_tail = trace;
-                    } else {
-                        trace_tail->next = trace;
-                        trace_tail = trace;
+            tmp = strtok(buffer, " ");
+
+            while(tmp) {
+                int num_fields = count_fields(tmp);
+                printf("Num fields: %d\n", num_fields);
+
+                if (num_fields == 9) {
+                    job_trace_t *trace = trace_from_socket_data(tmp);
+                    pending_job = trace->job_id;
+                    if(trace != NULL) {
+                        printf("Inserting trace...\n");
+                        //insert_trace_record(trace);
+                        if (trace_head == NULL) {
+                            trace_head = trace;
+                            trace_tail = trace;
+                        } else {
+                            trace_tail->next = trace;
+                            trace_tail = trace;
+                        }
                     }
+                } else {
+                    printf("Invalid number of fields (%d)\n", num_fields);
                 }
-            } else if (num_fields == 9) {
-                printf("%s (%d bytes)\n", buffer, valread);
+                tmp = strtok(NULL, " ");
             }
-
 
             //}
 		}
 		// ***********************************************************
-        printf("\n********************************\n");
-        printf("Current time: %ld -> %ld\n", cur_time, cur_time - 978325200);
-        printf("********************************\n");
+        //printf("\n********************************\n");
+        //printf("Current time: %ld -> %ld\n", cur_time, cur_time - 978325200);
+        //printf("********************************\n");
 
 		//submit jobs if needed
 		sim_submit_jobs();
@@ -1538,7 +1546,7 @@ extern void sim_controller()
             }
 
             if(job->job_id == pending_job) {
-                printf("\n>>>>>>>>>>>>>>> %18u %s %s\n\n", job->job_id,job->nodes, job->state_desc);
+                //printf("\n>>>>>>>>>>>>>>> %18u %s %s\n\n", job->job_id,job->nodes, job->state_desc);
                 if(new_socket != -1) {
                     sprintf(buffer, "%u;%s;%ld ", job->job_id, job->nodes, cur_time);
                     send(new_socket, buffer, strlen(buffer), 0);
