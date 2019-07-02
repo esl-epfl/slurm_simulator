@@ -3132,7 +3132,7 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
     struct job_details *details_ptr = job_ptr->details;
     bitstr_t *req_map = details_ptr->req_node_bitmap;
 
-    info("_select_nodes: printing initial bit sets");
+    info("_custom_allocator: printing initial bit sets");
     print_job_bitmap_info(node_map);
     print_job_bitmap_info(core_map);
     print_raw_bitmap(node_map);
@@ -3141,7 +3141,7 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
     if (bit_set_count(node_map) < min_nodes)
         return NULL;
 
-    _log_select_maps("_select_nodes/enter", node_map, core_map);
+    _log_select_maps("_custom_allocator/enter", node_map, core_map);
     /* get resource usage for this job from each available node */
     _get_res_usage(job_ptr, node_map, core_map, cr_node_cnt,
                    node_usage, cr_type, &cpu_cnt, test_only, part_core_map);
@@ -3150,9 +3150,9 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
 
     for (n = 0; n < cr_node_cnt; n++) {
         if (bit_test(node_map, n) && (cpu_cnt[n] == 0)) {
-            /* insufficient resources available on this node */
+            // insufficient resources available on this node
             if (req_map && bit_test(req_map, n)) {
-                /* cannot clear a required node! */
+                // cannot clear a required node!
                 xfree(cpu_cnt);
                 return NULL;
             }
@@ -3163,7 +3163,7 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
         xfree(cpu_cnt);
         return NULL;
     }
-    _log_select_maps("_select_nodes/elim_nodes", node_map, core_map);
+    _log_select_maps("_custom_allocator/elim_nodes", node_map, core_map);
 
     if (details_ptr->ntasks_per_node && details_ptr->num_tasks) {
         i  = details_ptr->num_tasks;
@@ -3176,17 +3176,29 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
         (max_nodes > job_ptr->details->num_tasks))
         max_nodes = MAX(job_ptr->details->num_tasks, min_nodes);
 
+    info("_custom_allocator: printing intermediate bit sets");
+    print_job_bitmap_info(node_map);
+    print_job_bitmap_info(core_map);
+    print_raw_bitmap(node_map);
+    print_raw_bitmap(core_map);
+
+    info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->ntasks_per_node);
+    info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->num_tasks);
+    info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->cpus_per_task);
+
     //************************************************************************************************
     // khv: Basic replacement for the _eval_nodes function
     //************************************************************************************************
     if(bit_set_count(node_map) >= req_nodes) {
         int remainingNodes = req_nodes;
-        info("_choose_nodes: Requested nodes: %d, cr_node_count: %d", remainingNodes, cr_node_cnt);
+        int nodesFreeCpusCount = 0;
+        info("_custom_allocator: Requested nodes: %d, cr_node_count: %d", remainingNodes, cr_node_cnt);
         //bitstr_t tmpmap = bit_copy(node_map);
         for(i=cr_node_cnt-1; i >= 0; i--) {
             //info("_choose_nodes: cpu count for node %d: %d", i, cpu_cnt[i]);
             if(bit_test(node_map, i) && remainingNodes > 0) {
                 remainingNodes--;
+                nodesFreeCpusCount += cpu_cnt[i];
                 info("_choose_nodes: Updated: %d", remainingNodes);
                 continue;
             }
@@ -3209,13 +3221,13 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
         for (n = 0; n < cr_node_cnt; n++) {
 
             if (bit_test(node_map, n)) {
-                remainingCoresPerNode = 3;  // FIXED for now
+                remainingCoresPerNode = job_ptr->details->cpus_per_task;
 
-                info("_select_nodes: filling cores for node %d...", n);
+                info("_custom_allocator: filling cores for node %d...", n);
                 cpus[a++] = remainingCoresPerNode; //cpu_cnt[n];
 
                 core_start_bit = cr_get_coremap_offset(n);
-                info("_select_nodes: clearing cores from %d to %d)", core_end_bit + 1, core_start_bit-1);
+                info("_custom_allocator: clearing cores from %d to %d)", core_end_bit + 1, core_start_bit-1);
                 for(i = core_end_bit + 1; i < core_start_bit; i++) bit_clear(core_map, i);
                 core_end_bit = cr_get_coremap_offset(n+1);
 
@@ -3231,19 +3243,19 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
             }
         }
         if (core_end_bit != cr_get_coremap_offset(cr_node_cnt - 1)) {
-            info("_select_nodes: clearing cores from %d to %d)", core_end_bit + 1, cr_get_coremap_offset(cr_node_cnt - 1) - 1);
+            info("_custom_allocator: clearing cores from %d to %d)", core_end_bit + 1, cr_get_coremap_offset(cr_node_cnt - 1) - 1);
             bit_nclear(core_map, core_end_bit + 1, cr_get_coremap_offset(cr_node_cnt - 1));
         }
     }
 
-    info("_select_nodes: printing final bit sets");
+    info("_custom_allocator: printing final bit sets");
     print_job_bitmap_info(node_map);
     print_job_bitmap_info(core_map);
     print_raw_bitmap(node_map);
     print_raw_bitmap(core_map);
-    info("_select_nodes: cr_node_cnt is %d",cr_node_cnt);
+    info("_custom_allocator: cr_node_cnt is %d",cr_node_cnt);
 
-    _log_select_maps("_select_nodes/sync_cores", node_map, core_map);
+    _log_select_maps("_custom_allocator/sync_cores", node_map, core_map);
     xfree(cpu_cnt);
     return cpus;
 
@@ -3383,6 +3395,8 @@ extern int cr_job_test(struct job_record *job_ptr, bitstr_t *node_bitmap,
 				  node_bitmap, cr_node_cnt, free_cores,
 				  node_usage, cr_type, test_only,
 				  part_core_map, prefer_alloc_nodes);
+    info("cons_res: cr_job_test: suceed_test: cpu_count: %d", cpu_count);
+
 	if (cpu_count == NULL) {
 		/* job cannot fit */
 		FREE_NULL_BITMAP(orig_map);
@@ -3514,6 +3528,7 @@ extern int cr_job_test(struct job_record *job_ptr, bitstr_t *node_bitmap,
     //*********************************************************************************************
     // khv: Calling the custom allocator here...
     //*********************************************************************************************
+    info("cons_res: share_res attribute: %d", job_ptr->details->share_res);
     cpu_count = _custom_allocator(job_ptr, min_nodes, max_nodes, req_nodes,
                               node_bitmap, cr_node_cnt, free_cores,
                               node_usage, cr_type, test_only,

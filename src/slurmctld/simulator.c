@@ -83,6 +83,9 @@
 
 #define PORT 8080
 
+server_status_t *status_array;
+int pending_job = 0;
+
 /* reference to priority multifactor decay */
 int (*_sim_run_priority_decay)(void)=NULL;
 
@@ -1281,7 +1284,7 @@ job_trace_t* trace_from_socket_data(char* str) {
     trace->duration = calc_duration(atoi(tmp));
 
     tmp = strtok(NULL, delim);
-    trace->wclimit = atoi(tmp);  // Fixed for now
+    trace->wclimit = atoi(tmp);
 
     tmp = strtok(NULL, delim);
     trace->tasks = (strlen(tmp) != 0 ? atoi(tmp) : 1);
@@ -1314,6 +1317,120 @@ job_trace_t* trace_from_socket_data(char* str) {
     printf("Tasks per node: %d\n\n", trace->tasks_per_node);
 
     return trace;
+}
+
+// Updates the status of the servers based on the data arriving from the socket
+void update_server_status(char* str) {
+    const char delim[] = ";";
+    info("Updating function, str: %s", str);
+
+    char *token = strtok(str, delim);
+    server_status_t *ss = NULL;
+
+    ListIterator part_iterator = list_iterator_create(part_list);
+    struct part_record *part_ptr;
+    part_ptr = (struct part_record *) list_next(part_iterator);
+    int num_nodes = bit_size(part_ptr->node_bitmap);
+
+    hostlist_iterator_t itr = NULL;
+    char *host = NULL;
+    hostlist_t hl=bitmap2hostlist(part_ptr->node_bitmap);
+    itr = hostlist_iterator_create(hl);
+
+    int node_cnt = 0;
+    while((host = hostlist_next(itr))) {
+
+        //info("Comparing %s with %s", status_array[node_cnt].name, token);
+        if (strcmp(status_array[node_cnt].name, token) == 0) {
+            info("Updating node %d (%e)", node_cnt, token);
+            ss = status_array + node_cnt;
+            break;
+        }
+
+        node_cnt++;
+    }
+
+    if(ss == NULL) {
+        fatal("Impossible to update node (%s not found)");
+    }
+
+    token = strtok(NULL, delim);
+    ss->powerIT = atof(token);
+
+    token = strtok(NULL, delim);
+    ss->powerFS = atof(token);
+
+    token = strtok(NULL, delim);
+    ss->airFlow = atof(token);
+
+    token = strtok(NULL, delim);
+    ss->tempOut = atof(token);
+
+    token = strtok(NULL, delim);
+    ss->avgTempOut = atof(token);
+
+    token = strtok(NULL, delim);
+    ss->maxTempCpu = atof(token);
+}
+
+// Decides how to process the data chunck (received from the socket) based on its number of fields
+void process_socket_str(char *str) {
+    int num_fields = count_fields(str);
+    printf("Num fields: %d\n", num_fields);
+
+    if (num_fields == 9) {
+        job_trace_t *trace = trace_from_socket_data(str);
+        pending_job = trace->job_id;
+        if(trace != NULL) {
+            printf("Inserting trace...\n");
+            //insert_trace_record(trace);
+            if (trace_head == NULL) {
+                trace_head = trace;
+                trace_tail = trace;
+            } else {
+                trace_tail->next = trace;
+                trace_tail = trace;
+            }
+        }
+    } else if (num_fields == 7) {
+        info("Trying to update...");
+        update_server_status(str);
+    } else {
+        printf("Invalid number of fields (%d)\n", num_fields);
+    }
+}
+
+// Splits the different data chunks received by the socket (in the case of receiving several concatenated)
+void split_socket_data(char* str) {
+    const char delim = ' ';
+    char *tmp, *tmp2, *token;
+    server_status_t *ss = NULL;
+
+    tmp = str;
+    tmp2 = str;
+
+    while(*tmp2) {
+
+        if(*tmp2 == delim) {
+            token = (char*)malloc(sizeof(char)*(tmp2-tmp+1));
+            strncpy(token, tmp, tmp2-tmp);
+            token[tmp2-tmp] = '\0';
+
+            //*tmp2 = "\0";
+            process_socket_str(token);
+
+            free(token);
+            tmp = tmp2 + 1;
+        }
+
+        tmp2++;
+    }
+
+    token = (char*)malloc(sizeof(char)*(tmp2-tmp+1));
+    strncpy(token, tmp, tmp2-tmp);
+    token[tmp2-tmp] = '\0';
+    process_socket_str(tmp);
+    free(token);
 }
 
 extern void sim_controller()
@@ -1371,6 +1488,31 @@ extern void sim_controller()
 	uint32_t next_sinfo=0;
 	uint32_t next_squeue=0;
 
+	// Instanciate servers status structures ***********************
+
+	ListIterator part_iterator = list_iterator_create(part_list);
+	struct part_record *part_ptr;
+	part_ptr = (struct part_record *) list_next(part_iterator);  // only take into account the first partition
+	int num_nodes = bit_size(part_ptr->node_bitmap);
+
+	// Instantiate
+	status_array = xmalloc(sizeof(server_status_t) * num_nodes);
+
+    hostlist_iterator_t itr = NULL;
+    char *host = NULL;
+    hostlist_t hl=bitmap2hostlist(part_ptr->node_bitmap);
+    itr = hostlist_iterator_create(hl);
+    int node_cnt = 0;
+    while((host = hostlist_next(itr))) {
+        status_array[node_cnt].name = host;
+        node_cnt++;
+    }
+
+    info("Status array direction: %ld", status_array);
+
+    //hostlist_destroy(hl);
+
+
 	// Open socket **************************************************
 	int server_fd, new_socket = -1, valread = -1;
     struct sockaddr_in address;
@@ -1414,7 +1556,6 @@ extern void sim_controller()
     //int arr_size = 0;
     //int arr_capacity = 3;  // Initial capacity
     //int* arr = malloc(3 * sizeof(int));
-    int pending_job = 0;
 
     char ctime_buff[128];
 	while(1)
@@ -1489,41 +1630,9 @@ extern void sim_controller()
             }
             buffer[valread] = '\0';
 
-            /*string str(buffer);
-            if (str.compare("finish") == 0) {
-                printf("Finished reception of traces.\n");
-                break;
-            }*/
+            printf("%s (%d bytes)\n", buffer, valread);
 
-            char *tmp;
-
-            tmp = strtok(buffer, " ");
-
-            while(tmp) {
-                int num_fields = count_fields(tmp);
-                printf("Num fields: %d\n", num_fields);
-
-                if (num_fields == 9) {
-                    job_trace_t *trace = trace_from_socket_data(tmp);
-                    pending_job = trace->job_id;
-                    if(trace != NULL) {
-                        printf("Inserting trace...\n");
-                        //insert_trace_record(trace);
-                        if (trace_head == NULL) {
-                            trace_head = trace;
-                            trace_tail = trace;
-                        } else {
-                            trace_tail->next = trace;
-                            trace_tail = trace;
-                        }
-                    }
-                } else {
-                    printf("Invalid number of fields (%d)\n", num_fields);
-                }
-                tmp = strtok(NULL, " ");
-            }
-
-            //}
+            split_socket_data(buffer);
 		}
 		// ***********************************************************
         //printf("\n********************************\n");
@@ -1603,6 +1712,8 @@ extern void sim_controller()
 		}
 
 	}
+
+	free(status_array);
 }
 
 

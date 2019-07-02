@@ -6,6 +6,16 @@
 #include <semaphore.h>
 #include "slurm/slurm.h"
 
+typedef struct server_status {
+    char *name;
+    double powerIT;
+    double powerFS;
+    double airFlow;
+    double tempOut;
+    double avgTempOut;
+    double maxTempCpu;
+} server_status_t;
+
 /******************************************************************************
  * Simulator Configuration Parameters
  ******************************************************************************/
