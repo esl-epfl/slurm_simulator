@@ -102,6 +102,8 @@
 /* Enables module specific debugging */
 #define _DEBUG 0
 
+extern server_status_t *status_array;
+
 static uint16_t _allocate_sc(struct job_record *job_ptr, bitstr_t *core_map,
 			     bitstr_t *part_core_map, const uint32_t node_i,
 			     int *cpu_alloc_size, bool entire_sockets_only);
@@ -3185,6 +3187,8 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
     info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->ntasks_per_node);
     info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->num_tasks);
     info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->cpus_per_task);
+
+    info("_custom_allocator: access to status structure?: %s", status_array[0].name);
 
     //************************************************************************************************
     // khv: Basic replacement for the _eval_nodes function

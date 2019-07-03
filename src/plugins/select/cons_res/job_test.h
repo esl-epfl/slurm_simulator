@@ -55,6 +55,7 @@
 #include "src/common/xstring.h"
 #include "src/common/slurm_resource_info.h"
 #include "src/slurmctld/slurmctld.h"
+#include "src/common/sim/sim.h"
 
 
 /* _job_test - does most of the real work for select_p_job_test(), which
