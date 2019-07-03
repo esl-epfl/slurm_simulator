@@ -3185,72 +3185,70 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
     print_raw_bitmap(core_map);
 
     info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->ntasks_per_node);
-    info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->num_tasks);
-    info("_custom_allocator: job ntasks_per_node: %d", job_ptr->details->cpus_per_task);
+    info("_custom_allocator: job num_tasks: %d", job_ptr->details->num_tasks);
+    info("_custom_allocator: job cpus_per_task: %d", job_ptr->details->cpus_per_task);
 
     info("_custom_allocator: access to status structure?: %s", status_array[0].name);
 
     //************************************************************************************************
-    // khv: Basic replacement for the _eval_nodes function
+    // khv: Generic procedure for allocation policies. Steps:
+    //      1. Search the best node.
+    //      2. Execute the maximum possible tasks in that node.
+    //      3. Clear remaining cores in that node.
+    //      4. Clear node in the temporal node map, so that it is not selected again.
+    //      5. If there are pending tasks, go to step 1.
+    //      6. Clear not used resources and generate node map. The set bits of node_map corresponds
+    //         to the ones that are set in the previous node_map and cleared in the tmp_node_map.
+    //         All the cores related to the nodes set in tmp_node_map at the end of the procedure
+    //         must be cleaned.
     //************************************************************************************************
-    if(bit_set_count(node_map) >= req_nodes) {
-        int remainingNodes = req_nodes;
-        int nodesFreeCpusCount = 0;
-        info("_custom_allocator: Requested nodes: %d, cr_node_count: %d", remainingNodes, cr_node_cnt);
-        //bitstr_t tmpmap = bit_copy(node_map);
-        for(i=cr_node_cnt-1; i >= 0; i--) {
-            //info("_choose_nodes: cpu count for node %d: %d", i, cpu_cnt[i]);
-            if(bit_test(node_map, i) && remainingNodes > 0) {
-                remainingNodes--;
-                nodesFreeCpusCount += cpu_cnt[i];
-                info("_choose_nodes: Updated: %d", remainingNodes);
-                continue;
+
+    bitstr_t *tmp_node_map = bit_copy(node_map);
+    int pending_tasks = job_ptr->details->num_tasks;
+    int node_i = 0, core_i = 0;
+    print_raw_bitmap(tmp_node_map);
+
+    while(pending_tasks) {
+        // first free node is considered the best one for now
+        while(!bit_test(tmp_node_map, node_i)) node_i++;
+        if(node_i >= cr_node_cnt) fatal("Not enough nodes to allocate the job.");
+
+        // mark cores as used for the maximum possible tasks in that node
+        int available_cores = bit_set_count_range(core_map, cr_get_coremap_offset(node_i), cr_get_coremap_offset(node_i+1));
+        int num_tasks_selected_node = available_cores / job_ptr->details->cpus_per_task;
+        num_tasks_selected_node = MIN(num_tasks_selected_node, pending_tasks);
+        int num_cores_to_fill = num_tasks_selected_node * job_ptr->details->cpus_per_task;
+
+        info("pending tasks %d; node_i %d; available cores(%d,%d) %d; num_tasks_node %d; num_cores_to_fill %d", pending_tasks, node_i, cr_get_coremap_offset(node_i), cr_get_coremap_offset(node_i+1), available_cores, num_tasks_selected_node, num_cores_to_fill);
+
+        for(core_i = cr_get_coremap_offset(node_i); core_i < cr_get_coremap_offset(node_i+1); core_i++) {
+            if(bit_test(core_map, core_i) && num_cores_to_fill > 0) {
+                bit_set(core_map, core_i);
+                num_cores_to_fill--;
+            } else {
+                bit_clear(core_map, core_i);  // clear remaining cores in that node, if any
             }
-            bit_clear(node_map, i);
+
         }
 
-        if(remainingNodes==0) {
-            rc = SLURM_SUCCESS;
+        // clear node in the temporal node map, so that it is not selected again
+        bit_clear(tmp_node_map, node_i);
+
+        pending_tasks -= num_tasks_selected_node;
+    }
+
+    // clear not used resources and generate node map
+    for(node_i = 0; node_i < cr_node_cnt; node_i++) {
+        if(bit_test(tmp_node_map, node_i)) {
+            for(core_i = cr_get_coremap_offset(node_i); core_i < cr_get_coremap_offset(node_i+1); core_i++) {
+                bit_clear(core_map, core_i);
+            }
+
+            bit_clear(node_map, node_i);
         }
     }
 
-    //************************************************************************************************
-    // khv: Generation of the core map
-    //************************************************************************************************
-    int core_start_bit, core_end_bit, remainingCoresPerNode;
-    if (rc == SLURM_SUCCESS) {
-        cpus = xmalloc(bit_set_count(node_map) * sizeof(uint16_t));
-        a = 0;
-        core_end_bit=-1;
-        for (n = 0; n < cr_node_cnt; n++) {
-
-            if (bit_test(node_map, n)) {
-                remainingCoresPerNode = job_ptr->details->cpus_per_task;
-
-                info("_custom_allocator: filling cores for node %d...", n);
-                cpus[a++] = remainingCoresPerNode; //cpu_cnt[n];
-
-                core_start_bit = cr_get_coremap_offset(n);
-                info("_custom_allocator: clearing cores from %d to %d)", core_end_bit + 1, core_start_bit-1);
-                for(i = core_end_bit + 1; i < core_start_bit; i++) bit_clear(core_map, i);
-                core_end_bit = cr_get_coremap_offset(n+1);
-
-                for(i = core_start_bit; i < core_end_bit; i++) {
-                    if(bit_test(core_map, i) && remainingCoresPerNode > 0) {
-                        remainingCoresPerNode--;
-                        bit_set(core_map, i);
-                    } else {
-                        bit_clear(core_map, i);
-                    }
-
-                }
-            }
-        }
-        if (core_end_bit != cr_get_coremap_offset(cr_node_cnt - 1)) {
-            info("_custom_allocator: clearing cores from %d to %d)", core_end_bit + 1, cr_get_coremap_offset(cr_node_cnt - 1) - 1);
-            bit_nclear(core_map, core_end_bit + 1, cr_get_coremap_offset(cr_node_cnt - 1));
-        }
-    }
+    FREE_NULL_BITMAP(tmp_node_map);
 
     info("_custom_allocator: printing final bit sets");
     print_job_bitmap_info(node_map);
