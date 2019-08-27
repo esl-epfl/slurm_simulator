@@ -3191,7 +3191,7 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
     info("_custom_allocator: access to status structure?: %s", status_array[0].name);
 
     //************************************************************************************************
-    // khv: Generic procedure for allocation policies. Steps:
+    // khv: Procedure for allocation policies. Steps:
     //      1. Search the best node.
     //      2. Execute the maximum possible tasks in that node.
     //      3. Clear remaining cores in that node.
@@ -3206,12 +3206,25 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
     bitstr_t *tmp_node_map = bit_copy(node_map);
     int pending_tasks = job_ptr->details->num_tasks;
     int node_i = 0, core_i = 0;
+    int node_min_temp = 0, min_temp = INT_MAX;
     print_raw_bitmap(tmp_node_map);
 
-    while(pending_tasks) {
+    while(pending_tasks && bit_set_count(tmp_node_map) > 0) {
         // first free node is considered the best one for now
-        while(!bit_test(tmp_node_map, node_i)) node_i++;
-        if(node_i >= cr_node_cnt) fatal("Not enough nodes to allocate the job.");
+        //while(!bit_test(tmp_node_map, node_i)) node_i++;
+        //if(node_i >= cr_node_cnt) fatal("Not enough nodes to allocate the job.");
+        node_min_temp = 0;
+        min_temp = INT_MAX;
+
+        for(node_i = 0; node_i < cr_node_cnt; node_i++) {
+            //info("_custom_allocator: comparing %lf with %lf", status_array[node_i].maxTempCpu, min_temp);
+            if(bit_test(tmp_node_map, node_i) && status_array[node_i].maxTempCpu < min_temp) {
+                min_temp = status_array[node_i].maxTempCpu;
+                node_min_temp = node_i;
+                info("_custom_allocator: selecting node %d, with a temperature of %lf", node_i, status_array[node_i].maxTempCpu);
+            }
+        }
+        node_i = node_min_temp;
 
         // mark cores as used for the maximum possible tasks in that node
         int available_cores = bit_set_count_range(core_map, cr_get_coremap_offset(node_i), cr_get_coremap_offset(node_i+1));
@@ -3219,7 +3232,7 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
         num_tasks_selected_node = MIN(num_tasks_selected_node, pending_tasks);
         int num_cores_to_fill = num_tasks_selected_node * job_ptr->details->cpus_per_task;
 
-        info("pending tasks %d; node_i %d; available cores(%d,%d) %d; num_tasks_node %d; num_cores_to_fill %d", pending_tasks, node_i, cr_get_coremap_offset(node_i), cr_get_coremap_offset(node_i+1), available_cores, num_tasks_selected_node, num_cores_to_fill);
+        info("_custom_allocator: pending tasks %d; node_i %d; available cores(%d,%d) %d; num_tasks_node %d; num_cores_to_fill %d", pending_tasks, node_i, cr_get_coremap_offset(node_i), cr_get_coremap_offset(node_i+1), available_cores, num_tasks_selected_node, num_cores_to_fill);
 
         for(core_i = cr_get_coremap_offset(node_i); core_i < cr_get_coremap_offset(node_i+1); core_i++) {
             if(bit_test(core_map, core_i) && num_cores_to_fill > 0) {
@@ -3235,6 +3248,10 @@ static uint16_t *_custom_allocator(struct job_record *job_ptr, uint32_t min_node
         bit_clear(tmp_node_map, node_i);
 
         pending_tasks -= num_tasks_selected_node;
+    }
+
+    if(pending_tasks) {
+        fatal("_custom_allocator: unable to allocate all the tasks");
     }
 
     // clear not used resources and generate node map

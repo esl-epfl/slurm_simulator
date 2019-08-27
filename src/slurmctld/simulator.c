@@ -80,6 +80,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 
 #define PORT 8080
 
@@ -1505,6 +1506,12 @@ extern void sim_controller()
     int node_cnt = 0;
     while((host = hostlist_next(itr))) {
         status_array[node_cnt].name = host;
+        status_array[node_cnt].powerIT = 0;
+        status_array[node_cnt].powerFS = 0;
+        status_array[node_cnt].airFlow = 0;
+        status_array[node_cnt].tempOut = 0;
+        status_array[node_cnt].avgTempOut = 0;
+        status_array[node_cnt].maxTempCpu = 0;
         node_cnt++;
     }
 
@@ -1512,9 +1519,8 @@ extern void sim_controller()
 
     //hostlist_destroy(hl);
 
-
 	// Open socket **************************************************
-	int server_fd, new_socket = -1, valread = -1;
+	int server_fd, new_socket = -1, valread = -1, count_avaiable = 0, buffer_i = 0;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
@@ -1621,23 +1627,41 @@ extern void sim_controller()
 
             printf("Starting trace listening...\n");
             //while(valread != 0) {
-            valread = read( new_socket , buffer, 1024);
-            printf("%s (%d bytes)\n", buffer, valread);
 
-            if(valread > 1023 || valread == 0) {
-                printf("valread: %d\n", valread);
+            //ioctl(new_socket, FIONREAD, &count_avaiable);
+
+            while(buffer_i < 1024) {
+                read(new_socket, buffer + buffer_i, 1);
+                //count_avaiable -= 1;
+
+                if(buffer[buffer_i] == ' ') {
+                    break;
+                } else if(buffer[buffer_i] != '\r' && buffer[buffer_i] != '\n') {
+                    buffer_i += 1;
+                }
+            }
+
+            if(buffer_i > 1023) {
+                printf("valread: %d\n", buffer_i);
                 return;
             }
-            buffer[valread] = '\0';
 
-            printf("%s (%d bytes)\n", buffer, valread);
+            buffer[buffer_i] = '\0';
+            printf("Read: %s\n", buffer);
 
-            split_socket_data(buffer);
+            if(strlen(buffer) == 0) {
+                perror("simulation finished");
+                exit(EXIT_SUCCESS);
+            }
+
+            process_socket_str(buffer);
+            buffer[0] = '\0';
+            buffer_i = 0;
 		}
 		// ***********************************************************
-        //printf("\n********************************\n");
-        //printf("Current time: %ld -> %ld\n", cur_time, cur_time - 978325200);
-        //printf("********************************\n");
+        printf("\n********************************\n");
+        printf("Current time: %ld -> %ld\n", cur_time, cur_time - 978325200);
+        printf("********************************\n");
 
 		//submit jobs if needed
 		sim_submit_jobs();
